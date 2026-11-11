@@ -8,7 +8,7 @@ single platform crate shares the consumer's existing gpui-fast 0.1.13 core.
 
 The source delta is the macOS native-demand fix from upstream proposal
 https://github.com/longbridge/gpui-fast/pull/137, source commit
-`3d9fa28` in `hesong12/gpui-fast` (`fix/macos-idle-redraw`).
+`d890f85` in `hesong12/gpui-fast` (`fix/macos-idle-redraw`).
 No other platform, renderer, layout or core behavior is changed.
 
 Consumer failure and real-app evidence:
