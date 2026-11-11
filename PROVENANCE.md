@@ -1,6 +1,6 @@
 # gpui-fast-macos native-demand patch
 
-The parent commit imports the published `gpui-fast-macos` 0.1.13 crate unchanged
+Commit `49c14223ef45cdce52733a44f5ed013b32c99cd5` imports the published `gpui-fast-macos` 0.1.13 crate unchanged
 from crates.io (archive checksum
 `d809f618f836aff7fc654c00c3f6e64d41abd83713140998dd83e8ad6906b1e9`).
 The normalized Cargo manifest and registry dependencies remain unchanged so this
