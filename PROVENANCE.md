@@ -9,6 +9,11 @@ single platform crate shares the consumer's existing gpui-fast 0.1.13 core.
 The source delta is the macOS native-demand fix from upstream proposal
 https://github.com/longbridge/gpui-fast/pull/137, source commit
 `d890f85` in `hesong12/gpui-fast` (`fix/macos-idle-redraw`).
+A frame request that arrives while no Metal link is attached (inside `displayLayer:`'s synchronous draw,
+which detaches the link, or before the window is first seen visible) damages the view as well, through a weak
+reference, so it is never dropped: GPUI asks only when a clean window turns dirty, and a dropped request left a
+window unpainted with every later update ignored (https://github.com/hesong12/kiweely/issues/5712).
+
 No other platform, renderer, layout or core behavior is changed.
 
 Consumer failure and real-app evidence:

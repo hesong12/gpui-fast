@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use objc2::rc::Weak;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::NSView;
 
@@ -12,26 +13,27 @@ pub(crate) struct FrameDemand {
 }
 
 impl FrameDemand {
-    /// The view must remain live while the Metal source is attached.
+    /// `native_view` may be null (no view to damage).
     pub(crate) unsafe fn new(
         frames: Option<&Rc<MetalFrames>>,
         native_view: *mut AnyObject,
     ) -> Self {
+        // Weak, so a waker GPUI keeps after the window closes never reaches a freed view.
+        // SAFETY: the caller passes a live view or null.
+        let view = unsafe { native_view.cast::<NSView>().as_ref() }.map(Weak::from);
         let waker = frames.map(|frames| {
             let frames = Rc::downgrade(frames);
             Rc::new(move || {
                 if let Some(frames) = frames.upgrade() {
                     frames.wake();
-                    let attached = frames
-                        .source
-                        .try_borrow()
-                        .is_ok_and(|source| source.is_some());
-                    if attached {
-                        // Unpausing alone can leave an idle compositor without
-                        // native damage, so no Metal callback arrives to draw.
-                        // SAFETY: the caller keeps the view live while attached;
-                        // MacWindow::drop detaches before closing its native view.
-                        let view = unsafe { &*native_view.cast::<NSView>() };
+                    // GPUI asks for a frame only when a clean window turns dirty, so a request must
+                    // never be dropped. Unpausing alone can leave an idle compositor without native
+                    // damage, and a request that arrives while no link is attached (inside the
+                    // synchronous draw of `displayLayer:`, which detaches the link, or before the
+                    // window was first seen visible) has no link to unpause at all: either way the
+                    // window stayed unpainted with every later update ignored. Damaging the view
+                    // makes AppKit call `displayLayer:`, which draws and attaches a link again.
+                    if let Some(view) = view.as_ref().and_then(Weak::load) {
                         view.setNeedsDisplay(true);
                     }
                 }
@@ -62,7 +64,7 @@ mod tests {
     #[test]
     fn borrowed_source_does_not_reenter_or_touch_the_view() {
         let frames = Rc::new(MetalFrames::default());
-        // No source is attached, so the native view is never used.
+        // No view is given, so there is nothing to damage.
         let demand = unsafe { FrameDemand::new(Some(&frames), ptr::null_mut()) };
         let replacing = frames.source.borrow_mut();
         demand.frame_waker().unwrap()();
