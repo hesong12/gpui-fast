@@ -13,6 +13,10 @@ A frame request that arrives while no Metal link is attached (inside `displayLay
 which detaches the link, or before the window is first seen visible) damages the view as well, through a weak
 reference, so it is never dropped: GPUI asks only when a clean window turns dirty, and a dropped request left a
 window unpainted with every later update ignored (https://github.com/hesong12/kiweely/issues/5712).
+A request that a running Metal link will deliver at the next vsync damages nothing: damaging the view for every
+request had AppKit draw each scroll and animation frame through `displayLayer:`, which detaches the link, presents
+synchronously with the transaction and builds a new link, so frames left the display's pacing and scrolling
+stuttered. Only a paused link, no link, or a request during `displayLayer:` that leaves no link attached damages it.
 
 No other platform, renderer, layout or core behavior is changed.
 

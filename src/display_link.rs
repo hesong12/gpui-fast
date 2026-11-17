@@ -306,25 +306,64 @@ pub struct MetalFrames {
     pub(crate) source: RefCell<Option<MetalFrameSource>>,
     /// Whether GPUI asked for a frame since the current update began.
     woken: Cell<bool>,
+    /// Whether `end_frame` paused the attached link.
+    paused: Cell<bool>,
+    /// Whether `displayLayer:` is drawing with the link detached; it attaches a new one when it is done.
+    native_draw: Cell<bool>,
+    /// Whether GPUI asked for a frame while `displayLayer:` drew.
+    asked_during_native_draw: Cell<bool>,
 }
 
 impl MetalFrames {
     pub fn replace(&self, source: Option<MetalFrameSource>) {
         *self.source.borrow_mut() = source;
+        // A new link starts unpaused.
+        self.paused.set(false);
     }
 
     pub fn is_attached(&self) -> bool {
         self.source.borrow().is_some()
     }
 
-    pub fn wake(&self) {
+    /// Asks for a frame. Returns whether the view must be damaged for it to arrive.
+    ///
+    /// A running link delivers the frame at the next vsync on its own. Damaging the view then makes AppKit draw
+    /// it through `displayLayer:` instead, which detaches the link, presents synchronously with the transaction
+    /// and builds a new link afterwards: done for every scroll or animation frame, that took the window off the
+    /// display's pacing and made scrolling stutter. Only a paused link on an idle compositor
+    /// (https://github.com/hesong12/kiweely/issues/5152) and a window with no link at all
+    /// (https://github.com/hesong12/kiweely/issues/5712) need the damage. A request made while `displayLayer:`
+    /// draws is answered by the link it attaches afterwards (see `end_native_draw`).
+    pub fn wake(&self) -> bool {
         self.woken.set(true);
-        // A source being replaced starts unpaused, so skipping it is safe.
-        if let Ok(source) = self.source.try_borrow()
-            && let Some(source) = source.as_ref()
-        {
-            source.set_paused(false);
+        if self.native_draw.get() {
+            self.asked_during_native_draw.set(true);
+            return false;
         }
+        match self.source.try_borrow() {
+            Ok(source) => match source.as_ref() {
+                Some(source) => {
+                    source.set_paused(false);
+                    self.paused.replace(false)
+                }
+                None => true,
+            },
+            // A source being replaced starts unpaused, so it delivers the frame.
+            Err(_) => false,
+        }
+    }
+
+    /// `displayLayer:` is about to draw with the link detached.
+    pub fn begin_native_draw(&self) {
+        self.native_draw.set(true);
+        self.asked_during_native_draw.set(false);
+    }
+
+    /// `displayLayer:` has drawn and tried to attach a new link. Returns whether a frame asked for during the
+    /// draw still needs the view damaged: no link could be attached (the window is not visible yet) to deliver it.
+    pub fn end_native_draw(&self) -> bool {
+        self.native_draw.set(false);
+        self.asked_during_native_draw.replace(false) && !self.is_attached()
     }
 
     pub fn begin_frame(&self) {
@@ -337,6 +376,7 @@ impl MetalFrames {
         let pause = !used_drawable && !self.woken.get();
         if pause && let Some(source) = self.source.borrow().as_ref() {
             source.set_paused(true);
+            self.paused.set(true);
         }
         pause
     }
@@ -617,6 +657,25 @@ mod tests {
 
         frames.begin_frame();
         assert!(frames.end_frame(false), "an idle update pauses the link");
+    }
+
+    #[test]
+    fn only_a_request_no_link_can_deliver_damages_the_view() {
+        let frames = MetalFrames::default();
+        assert!(frames.wake(), "with no link attached, only damage brings a frame");
+
+        frames.begin_native_draw();
+        assert!(!frames.wake(), "during displayLayer: the link it attaches next delivers the frame");
+        assert!(
+            frames.end_native_draw(),
+            "a request made during displayLayer: still damages when no link could be attached"
+        );
+
+        frames.begin_native_draw();
+        assert!(
+            !frames.end_native_draw(),
+            "a displayLayer: draw with no request during it asks for nothing"
+        );
     }
 
     #[test]

@@ -3419,8 +3419,15 @@ extern "C" fn display_layer(this: &AnyObject, _: Sel, _: *mut AnyObject) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
     if let Some(mut callback) = lock.request_frame_callback.take() {
+        let metal_frames = match &lock.frame_source {
+            FrameSource::Metal(metal_frames) => Some(metal_frames.clone()),
+            FrameSource::DisplayLink(_) => None,
+        };
         crate::fast::composition::set_presents_with_transaction(&mut lock, true);
         lock.stop_display_link();
+        if let Some(metal_frames) = &metal_frames {
+            metal_frames.begin_native_draw();
+        }
         drop(lock);
         callback(RequestFrameOptions {
             signal_at,
@@ -3432,6 +3439,13 @@ extern "C" fn display_layer(this: &AnyObject, _: Sel, _: *mut AnyObject) {
         lock.request_frame_callback = Some(callback);
         crate::fast::composition::set_presents_with_transaction(&mut lock, false);
         lock.start_display_link(&window_state);
+        drop(lock);
+        // A frame asked for during the draw comes from the link just attached; with none attached, only damage
+        // brings it (`MetalFrames::end_native_draw`).
+        if metal_frames.is_some_and(|metal_frames| metal_frames.end_native_draw()) {
+            let view: &NSView = unsafe { &*(this as *const AnyObject).cast::<NSView>() };
+            view.setNeedsDisplay(true);
+        }
     }
 }
 

@@ -24,18 +24,17 @@ impl FrameDemand {
         let waker = frames.map(|frames| {
             let frames = Rc::downgrade(frames);
             Rc::new(move || {
-                if let Some(frames) = frames.upgrade() {
-                    frames.wake();
-                    // GPUI asks for a frame only when a clean window turns dirty, so a request must
-                    // never be dropped. Unpausing alone can leave an idle compositor without native
-                    // damage, and a request that arrives while no link is attached (inside the
-                    // synchronous draw of `displayLayer:`, which detaches the link, or before the
-                    // window was first seen visible) has no link to unpause at all: either way the
-                    // window stayed unpainted with every later update ignored. Damaging the view
-                    // makes AppKit call `displayLayer:`, which draws and attaches a link again.
-                    if let Some(view) = view.as_ref().and_then(Weak::load) {
-                        view.setNeedsDisplay(true);
-                    }
+                // GPUI asks for a frame only when a clean window turns dirty, so a request must
+                // never be dropped. Unpausing alone can leave an idle compositor without native
+                // damage, and a request that arrives before the window was first seen visible has
+                // no link to unpause at all: either way the window stayed unpainted with every
+                // later update ignored. Damaging the view makes AppKit call `displayLayer:`, which
+                // draws and attaches a link again. A running link needs no damage (`MetalFrames::wake`).
+                if let Some(frames) = frames.upgrade()
+                    && frames.wake()
+                    && let Some(view) = view.as_ref().and_then(Weak::load)
+                {
+                    view.setNeedsDisplay(true);
                 }
             }) as Rc<dyn Fn()>
         });
