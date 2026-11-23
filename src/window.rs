@@ -508,6 +508,12 @@ impl WindowsWindow {
             if params.is_minimizable {
                 dwstyle |= WS_MINIMIZEBOX;
             }
+            // A window that draws its own title bar keeps WS_CAPTION (the caption itself stays hidden by the
+            // WM_NCCALCSIZE below): without it Windows 11 never opens the snap layouts over a maximize
+            // button that the app marks with WindowControlArea::Max.
+            if hide_title_bar {
+                dwstyle |= WS_CAPTION;
+            }
             let dwexstyle = if params.kind == WindowKind::Dialog {
                 dwstyle |= WS_POPUP | WS_CAPTION;
                 WS_EX_DLGMODALFRAME
