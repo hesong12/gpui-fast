@@ -1029,9 +1029,7 @@ impl MacWindowState {
 pub(crate) struct MacWindow(
     Rc<Mutex<MacWindowState>>,
     MainThreadMarker,
-    /// The Metal link's frame waker, kept outside the lock so waking never
-    /// waits on it. `None` when a `CVDisplayLink` paces frames.
-    Option<Rc<MetalFrames>>,
+    crate::fast::frame_demand::FrameDemand,
 );
 
 impl MacWindow {
@@ -1224,7 +1222,11 @@ impl MacWindow {
                 accesskit_adapter: None,
                 sheet_parent: None,
             }));
-            let mut window = Self(state, marker, metal_frames);
+            let mut window = Self(
+                state,
+                marker,
+                crate::fast::frame_demand::FrameDemand::new(metal_frames.as_ref(), native_view),
+            );
 
             (*native_window)
                 .class()
@@ -2234,18 +2236,11 @@ impl PlatformWindow for MacWindow {
     // GPUI calls this without waking the frame waker when a window only needs
     // a present, so a paused Metal link must resume here too.
     fn schedule_frame(&self) {
-        if let Some(metal_frames) = &self.2 {
-            metal_frames.wake();
-        }
+        crate::fast::frame_demand::FrameDemand::schedule_frame(&self.2);
     }
 
     fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
-        let metal_frames = Rc::downgrade(self.2.as_ref()?);
-        Some(Rc::new(move || {
-            if let Some(metal_frames) = metal_frames.upgrade() {
-                metal_frames.wake();
-            }
-        }))
+        crate::fast::frame_demand::FrameDemand::frame_waker(&self.2)
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -3520,8 +3515,15 @@ extern "C" fn display_layer(this: &AnyObject, _: Sel, _: *mut AnyObject) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
     if let Some(mut callback) = lock.request_frame_callback.take() {
+        let metal_frames = match &lock.frame_source {
+            FrameSource::Metal(metal_frames) => Some(metal_frames.clone()),
+            FrameSource::DisplayLink(_) => None,
+        };
         crate::fast::composition::set_presents_with_transaction(&mut lock, true);
         lock.stop_display_link();
+        if let Some(metal_frames) = &metal_frames {
+            metal_frames.begin_native_draw();
+        }
         drop(lock);
         callback(RequestFrameOptions {
             signal_at,
@@ -3533,6 +3535,13 @@ extern "C" fn display_layer(this: &AnyObject, _: Sel, _: *mut AnyObject) {
         lock.request_frame_callback = Some(callback);
         crate::fast::composition::set_presents_with_transaction(&mut lock, false);
         lock.start_display_link(&window_state);
+        drop(lock);
+        // A frame asked for during the draw comes from the link just attached; with none attached, only damage
+        // brings it (`MetalFrames::end_native_draw`).
+        if metal_frames.is_some_and(|metal_frames| metal_frames.end_native_draw()) {
+            let view: &NSView = unsafe { &*(this as *const AnyObject).cast::<NSView>() };
+            view.setNeedsDisplay(true);
+        }
     }
 }
 
